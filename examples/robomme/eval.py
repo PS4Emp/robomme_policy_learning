@@ -9,6 +9,13 @@ from typing import Optional, Any, Tuple
 import numpy as np
 
 from openpi_client import websocket_client_policy as _websocket_client_policy
+from controlled_recency import assemble_condition
+from controlled_recency import build_bundle
+from controlled_recency import load_distractor_segments
+from controlled_recency import parse_distractor_spec
+from controlled_recency import validate_protocol_inputs
+from controlled_recency import write_or_validate_canonical_manifest
+from controlled_recency import write_metadata
 from utils import (
     pack_buffer,
     check_args,
@@ -61,6 +68,10 @@ class Args:
     subgoal_keep_period: int = 1 # ever subgoal should be kept for this many steps
     # this can accelerate the evaluation process for symbolic memory
     # In our experiments, we just set this to 1
+
+    # Controlled recency diagnostics. Disabled by default.
+    controlled_recency_condition: Optional[str] = None  # far, middle, recent
+    controlled_recency_distractors: str = ""  # comma-separated Family:Episode entries
 
 
 
@@ -164,22 +175,76 @@ class EpisodeEvaluator:
 
         print(f"task_goal: {task_goal}")
 
-        epstate.image_buffer.extend(pre_traj["images"])
-        epstate.wrist_image_buffer.extend(pre_traj["wrist_images"])
-        epstate.state_buffer.extend(pre_traj["states"])
+        if self.args.controlled_recency_condition:
+            assembly = self._build_controlled_recency_assembly(env_runner, pre_traj, video_save_dir)
+            images = assembly.images
+            wrist_images = assembly.wrist_images
+            states = assembly.states
+            epstate.exec_start_idx = assembly.exec_start_idx
+        else:
+            images = pre_traj["images"]
+            wrist_images = pre_traj["wrist_images"]
+            states = pre_traj["states"]
+            epstate.exec_start_idx = len(images) - 1
 
-        for i in range(len(pre_traj["images"])):
+        epstate.image_buffer.extend(images)
+        epstate.wrist_image_buffer.extend(wrist_images)
+        epstate.state_buffer.extend(states)
+
+        for i in range(len(images)):
             recorder.record(
-                image=pre_traj["images"][i].copy(),
-                wrist_image=pre_traj["wrist_images"][i].copy(),
-                state=pre_traj["states"][i].copy(),
-                is_video_demo=env_runner.env_id in TASK_WITH_VIDEO_DEMO and i < len(pre_traj["images"]) - 1,
+                image=images[i].copy(),
+                wrist_image=wrist_images[i].copy(),
+                state=states[i].copy(),
+                is_video_demo=env_runner.env_id in TASK_WITH_VIDEO_DEMO and i < epstate.exec_start_idx,
                 subgoal=None if self.args.subgoal_type is None else "[initializing...]",
             )
 
-        epstate.exec_start_idx = len(epstate.image_buffer) - 1
         print(f"exec_start_idx: {epstate.exec_start_idx}")
         return task_goal, recorder
+
+    def _build_controlled_recency_assembly(
+        self,
+        env_runner: EnvRunner,
+        query_pre_traj: dict[str, Any],
+        video_save_dir: Path,
+    ):
+        distractors = parse_distractor_spec(self.args.controlled_recency_distractors)
+        validate_protocol_inputs(env_runner.env_id, distractors)
+        distractor_segments = load_distractor_segments(
+            distractors,
+            EnvRunner,
+            video_save_dir,
+            self.args.max_steps,
+        )
+        bundle = build_bundle(
+            query_pre_traj,
+            env_runner.env_id,
+            env_runner.episode_id,
+            distractor_segments,
+        )
+        canonical_manifest_path = write_or_validate_canonical_manifest(
+            bundle,
+            self.save_dir / "controlled_recency" / "canonical",
+            env_runner.env_id,
+            env_runner.episode_id,
+            distractors,
+            query_pre_traj["task_goal"],
+        )
+        assembly = assemble_condition(
+            bundle,
+            self.args.controlled_recency_condition,
+            env_runner.env_id,
+            env_runner.episode_id,
+            query_pre_traj["task_goal"],
+        )
+        assembly.metadata["canonical_manifest_path"] = str(canonical_manifest_path)
+        metadata_filename = (
+            f"{env_runner.env_id}_ep{env_runner.episode_id}_{assembly.condition}_controlled_recency.json"
+        )
+        metadata_path = write_metadata(assembly.metadata, self.save_dir / "controlled_recency", metadata_filename)
+        print(f"controlled_recency_metadata: {metadata_path}")
+        return assembly
 
     def get_action_chunk(
         self,
