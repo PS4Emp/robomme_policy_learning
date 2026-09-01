@@ -316,6 +316,38 @@ class MemoryBuffer:
     
     def prepare_frame_sampling(self, step_idx, token_budget, token_per_image, history_feats_gather_fn,  *args, **kwargs):
         indices_to_load = self.get_frame_sampling_indices(step_idx, token_budget, token_per_image)
+
+        override_path = os.environ.get("MME_FRAMESAMP_OVERRIDE_PATH")
+        if override_path:
+            with open(override_path, encoding="utf-8") as f:
+                override = json.load(f)
+
+            override_step_idx = int(override["step_idx"])
+            if override_step_idx != int(step_idx):
+                raise ValueError(
+                    f"FrameSamp override step_idx {override_step_idx} does not match current step_idx {step_idx}"
+                )
+            override_indices = override["indices_to_load"]
+            if not isinstance(override_indices, list):
+                raise ValueError("FrameSamp override indices_to_load must be a list")
+
+            indices_to_load = [int(idx) for idx in override_indices]
+            max_size = token_budget // (token_per_image * self.num_views)
+
+            if len(indices_to_load) != max_size:
+                raise ValueError(
+                    f"FrameSamp override must provide exactly {max_size} indices; "
+                    f"got {len(indices_to_load)}"
+                )
+            if len(set(indices_to_load)) != len(indices_to_load):
+                raise ValueError("FrameSamp override indices must be unique")
+            if indices_to_load != sorted(indices_to_load):
+                raise ValueError("FrameSamp override indices must be sorted")
+            if any(idx < 0 or idx > step_idx for idx in indices_to_load):
+                raise ValueError(
+                    f"FrameSamp override indices must lie in [0, {step_idx}]"
+                )
+
         trace_path = os.environ.get("MME_FRAMESAMP_TRACE_PATH")
         if trace_path:
             max_size = token_budget // (token_per_image * self.num_views)

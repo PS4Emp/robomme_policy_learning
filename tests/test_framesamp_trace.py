@@ -4,6 +4,7 @@ import sys
 import types
 
 import numpy as np
+import pytest
 
 
 def _install_missing_import_stubs():
@@ -67,6 +68,7 @@ def test_frame_sampling_trace_does_not_change_outputs(monkeypatch, tmp_path):
     buffer = _make_buffer()
 
     monkeypatch.delenv("MME_FRAMESAMP_TRACE_PATH", raising=False)
+    monkeypatch.delenv("MME_FRAMESAMP_OVERRIDE_PATH", raising=False)
     outputs_without_trace = buffer.prepare_frame_sampling(
         step_idx,
         token_budget,
@@ -97,3 +99,58 @@ def test_frame_sampling_trace_does_not_change_outputs(monkeypatch, tmp_path):
             "indices_to_load": [0, 1, 3, 5],
         }
     ]
+def test_frame_sampling_override_uses_exact_indices(monkeypatch, tmp_path):
+    step_idx = 5
+    token_budget = 64
+    token_per_image = 16
+    buffer = _make_buffer()
+
+    override_path = tmp_path / "override.json"
+    override_path.write_text(
+        json.dumps({
+            "step_idx": 5,
+            "indices_to_load": [0, 2, 4, 5],
+        }),
+        encoding="utf-8",
+    )
+    trace_path = tmp_path / "framesamp_override.jsonl"
+
+    monkeypatch.setenv("MME_FRAMESAMP_OVERRIDE_PATH", str(override_path))
+    monkeypatch.setenv("MME_FRAMESAMP_TRACE_PATH", str(trace_path))
+
+    img_emb, _, _, _ = buffer.prepare_frame_sampling(
+        step_idx,
+        token_budget,
+        token_per_image,
+        buffer.default_history_feats_gather_fn,
+    )
+    sampled_steps = img_emb.reshape(4, 16, 2)[:, 0, 0]
+    np.testing.assert_array_equal(
+        sampled_steps,
+        np.array([0, 2, 4, 5], dtype=np.float32),
+    )
+
+    record = json.loads(trace_path.read_text(encoding="utf-8").strip())
+    assert record["indices_to_load"] == [0, 2, 4, 5]
+
+
+def test_frame_sampling_override_fails_on_wrong_step(monkeypatch, tmp_path):
+    buffer = _make_buffer()
+
+    override_path = tmp_path / "override.json"
+    override_path.write_text(
+        json.dumps({
+            "step_idx": 4,
+            "indices_to_load": [0, 1, 3, 5],
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("MME_FRAMESAMP_OVERRIDE_PATH", str(override_path))
+
+    with pytest.raises(ValueError, match="does not match current step_idx"):
+        buffer.prepare_frame_sampling(
+            5,
+            64,
+            16,
+            buffer.default_history_feats_gather_fn,
+        )
