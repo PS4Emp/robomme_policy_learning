@@ -288,7 +288,14 @@ class MemoryBuffer:
         return even_sampling_indices(step_idx, max_size)
     
     
-    def _prepare_frame_sampling(self, history_feats, indices_to_load, token_budget, token_per_image):
+    def _prepare_frame_sampling(
+        self,
+        history_feats,
+        indices_to_load,
+        token_budget,
+        token_per_image,
+        step_idx,
+    ):
         spatial_size = str(int(math.sqrt(token_per_image)))
         spatial_key = f"{spatial_size}x{spatial_size}"
         max_size = token_budget // (token_per_image * self.num_views)
@@ -297,6 +304,96 @@ class MemoryBuffer:
         sampled_img_emb = self._load_emb(history_feats, indices_to_load, f"image_emb_{spatial_key}")
         sampled_pos_emb = self._load_emb(history_feats, indices_to_load, f"pos_emb_{spatial_key}")
         sampled_state_emb = self._load_emb(history_feats, indices_to_load, "state_emb")
+
+        temporal_pos_override_path = os.environ.get(
+            "MME_FRAMESAMP_TEMPORAL_POS_OVERRIDE_PATH"
+        )
+        if temporal_pos_override_path:
+            with open(temporal_pos_override_path, encoding="utf-8") as f:
+                temporal_pos_override = json.load(f)
+
+            override_step_idx = int(temporal_pos_override["step_idx"])
+            if override_step_idx != int(step_idx):
+                raise ValueError(
+                    f"FrameSamp temporal-position override step_idx "
+                    f"{override_step_idx} does not match current step_idx {step_idx}"
+                )
+            position_map = temporal_pos_override.get("position_map")
+            if not isinstance(position_map, list):
+                raise ValueError(
+                    "FrameSamp temporal-position override position_map must be a list"
+                )
+
+            source_indices = []
+            target_positions = []
+            for item in position_map:
+                if not isinstance(item, dict):
+                    raise ValueError(
+                        "FrameSamp temporal-position override entries must be objects"
+                    )
+                source_indices.append(int(item["source_index"]))
+                target_positions.append(int(item["target_temporal_position"]))
+            if len(set(source_indices)) != len(source_indices):
+                raise ValueError(
+                    "FrameSamp temporal-position override source indices must be unique"
+                )
+            if set(source_indices) != set(indices_to_load):
+                raise ValueError(
+                    "FrameSamp temporal-position override source indices must exactly "
+                    "match the selected FrameSamp indices"
+                )
+            if len(set(target_positions)) != len(target_positions):
+                raise ValueError(
+                    "FrameSamp temporal-position override target temporal positions "
+                    "must be unique"
+                )
+            if any(pos < 0 or pos > step_idx for pos in target_positions):
+                raise ValueError(
+                    "FrameSamp temporal-position override target temporal positions "
+                    f"must lie in [0, {step_idx}]"
+                )
+            if self.pos_emb_dim % 6 != 0:
+                raise ValueError(
+                    "FrameSamp temporal-position override requires pos_emb_dim "
+                    "divisible by 6"
+                )
+            if sampled_pos_emb.shape[-1] != self.pos_emb_dim:
+                raise ValueError(
+                    "FrameSamp temporal-position override positional embedding "
+                    f"dimension {sampled_pos_emb.shape[-1]} does not match "
+                    f"configured pos_emb_dim {self.pos_emb_dim}"
+                )
+            if self.pos_emb_dict is None or spatial_key not in self.pos_emb_dict:
+                raise ValueError(
+                    "FrameSamp temporal-position override requires positional "
+                    f"dictionary for {spatial_key}"
+                )
+            # PosEmb3D layout is:
+            #   2/6 temporal channels followed by 4/6 spatial channels.
+            temporal_dim = self.pos_emb_dim // 3
+            source_to_target = dict(
+                zip(source_indices, target_positions, strict=True)
+            )
+
+            # Copy before intervention so stored history features remain untouched.
+            sampled_pos_emb = sampled_pos_emb.copy()
+
+            for slot, source_index in enumerate(indices_to_load):
+                target_position = source_to_target[source_index]
+                start = target_position * self.num_views
+                stop = (target_position + 1) * self.num_views
+                target_pos_emb = self.pos_emb_dict[spatial_key][start:stop]
+                if target_pos_emb.shape != sampled_pos_emb[slot].shape:
+                    raise ValueError(
+                        "FrameSamp temporal-position override target positional "
+                        f"embedding shape {target_pos_emb.shape} does not match "
+                        f"selected frame shape {sampled_pos_emb[slot].shape}"
+                    )
+
+                sampled_pos_emb[slot, ..., :temporal_dim] = (
+                    target_pos_emb[..., :temporal_dim]
+                )
+
         mask = np.ones((sampled_img_emb.shape[0]), dtype=np.bool_)
                 
         # we use right padding to the perceptual memory
@@ -363,7 +460,13 @@ class MemoryBuffer:
         # print("step_idx: ", step_idx, "indices_to_load: ", indices_to_load, "length: ", len(indices_to_load))
         # self._visualize_frame_sampling(indices_to_load, step_idx)
         history_feats = history_feats_gather_fn(indices_to_load, *args, **kwargs)
-        return self._prepare_frame_sampling(history_feats, indices_to_load, token_budget, token_per_image)
+        return self._prepare_frame_sampling(
+            history_feats,
+            indices_to_load,
+            token_budget,
+            token_per_image,
+            step_idx,
+        )
 
 
     def _visualize_frame_sampling(self, indices_to_load, step_idx):
