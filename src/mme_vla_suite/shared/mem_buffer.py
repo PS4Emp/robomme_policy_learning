@@ -3,6 +3,8 @@ import jax.numpy as jnp
 import einops
 import math
 import heapq
+import json
+import os
 from copy import deepcopy
 import numpy as np
 from typing import Callable
@@ -314,6 +316,18 @@ class MemoryBuffer:
     
     def prepare_frame_sampling(self, step_idx, token_budget, token_per_image, history_feats_gather_fn,  *args, **kwargs):
         indices_to_load = self.get_frame_sampling_indices(step_idx, token_budget, token_per_image)
+        trace_path = os.environ.get("MME_FRAMESAMP_TRACE_PATH")
+        if trace_path:
+            max_size = token_budget // (token_per_image * self.num_views)
+            with open(trace_path, "a", encoding="utf-8") as f:
+                f.write(json.dumps({
+                    "step_idx": int(step_idx),
+                    "token_budget": int(token_budget),
+                    "token_per_image": int(token_per_image),
+                    "num_views": int(self.num_views),
+                    "max_size": int(max_size),
+                    "indices_to_load": [int(idx) for idx in indices_to_load],
+                }) + "\n")
         # print("step_idx: ", step_idx, "indices_to_load: ", indices_to_load, "length: ", len(indices_to_load))
         # self._visualize_frame_sampling(indices_to_load, step_idx)
         history_feats = history_feats_gather_fn(indices_to_load, *args, **kwargs)
