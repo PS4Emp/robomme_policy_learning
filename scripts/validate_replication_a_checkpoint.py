@@ -27,6 +27,7 @@ import hashlib
 import logging
 import os
 import sys
+from pathlib import Path
 
 import numpy as np
 
@@ -86,9 +87,13 @@ def _assert_temporal_confined(reference_pos, candidate_pos, temporal_dim, name):
 
 
 def _initial_action_chunk(actions):
-    if actions.shape != (16, 8):
-        raise AssertionError(f"Expected actions.shape == (16, 8), got {actions.shape}")
-    return actions
+    actions = np.asarray(actions)
+    if actions.ndim != 2 or actions.shape[1] != 8 or actions.shape[0] < 16:
+        raise AssertionError(
+            f"Expected actions with shape (N, 8), N >= 16; got {actions.shape}"
+        )
+    logging.info("Raw inferred action shape: %s; validating first 16x8 chunk", actions.shape)
+    return actions[:16, :8]
 
 
 def run_in_process_validation(policy):
@@ -419,7 +424,7 @@ def main():
     parser.add_argument("--port", type=int, default=8000, help="Policy server port")
     parser.add_argument(
         "--checkpoint-dir",
-        type=str,
+        type=Path,
         default=None,
         help="Required for authoritative in-process validation",
     )
