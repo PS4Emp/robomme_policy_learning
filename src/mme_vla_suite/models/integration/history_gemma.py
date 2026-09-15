@@ -48,7 +48,7 @@ class MemoryAttention(nn.Module):
     Use action sequence to attend memory sequence.
     """
     @nn.compact
-    def __call__(self, x, mem_seq, mem_mask):
+    def __call__(self, x, mem_seq, mem_mask, mem_k_positions=None):
         # x: [B, T, D], mem_seq: [B, S, D], mem_mask: [B, S]
         B, mem_len, mem_width = mem_seq.shape
         B, x_len, x_width = x.shape
@@ -84,7 +84,17 @@ class MemoryAttention(nn.Module):
         q_positions = einops.repeat(
             jnp.arange(mem_len, x_len + mem_len), "t -> b t", b=B
         )
-        k_positions = einops.repeat(jnp.arange(mem_len), "t -> b t", b=B)
+        if mem_k_positions is None:
+            # Native behavior: serialized memory-token slots determine
+            # the RoPE key positions.
+            k_positions = einops.repeat(jnp.arange(mem_len), "t -> b t", b=B)
+        else:
+            k_positions = jnp.asarray(mem_k_positions)
+            if k_positions.shape != (B, mem_len):
+                raise ValueError(
+                    "mem_k_positions must have shape "
+                    f"{(B, mem_len)}, got {k_positions.shape}"
+                )
         
         q = _apply_rope(q, positions=q_positions)
         q *= head_dim**-0.5
@@ -129,6 +139,7 @@ class HistoryBlock(nn.Module):
         adarms_cond,
         mem_seq,
         mem_mask,
+        mem_k_positions,
         deterministic=True,
     ):  # noqa: FBT002
 
@@ -175,7 +186,12 @@ class HistoryBlock(nn.Module):
             if x is not None:
                 # Add Memory Modulation before FFN
                 if i == len(xs) - 1 and self.integration_type == "modulation":
-                    mem_mod_vec = mem_attn(x, mem_seq[-1], mem_mask[-1])
+                    mem_mod_vec = mem_attn(
+                        x,
+                        mem_seq[-1],
+                        mem_mask[-1],
+                        None if mem_k_positions is None else mem_k_positions[-1],
+                    )
                     x = MemoryRMSNorm(name="mem_rms_norm_ffn")(x, mem_mod_vec)  
                 
                 name=_name("pre_ffw_norm", i) if self.integration_type != "expert" else _name("pre_ffw_norm", i-1)
@@ -235,7 +251,7 @@ class Module(nn.Module):
         block_cls = nn.remat(
             HistoryBlock,
             prevent_cse=False,
-            static_argnums=(7,),  # 0=xs, 5=decode
+            static_argnums=(8,),
             policy=jax.checkpoint_policies.nothing_saveable,
         )
         self.layers = nn.scan(
@@ -250,7 +266,8 @@ class Module(nn.Module):
                 nn.broadcast,
                 nn.broadcast,
                 nn.broadcast,
-            ),  # 0=kv_cache, 1=positions, 2=mask, 3=adarms_cond, 4=mem_seq, 5=mem_mask, 6=deterministic
+                nn.broadcast,
+            ),  # kv_cache, positions, mask, adarms_cond, mem_seq, mem_mask, mem_k_positions, deterministic
             length=self.configs[0].depth,
         )(
             configs=self.configs,
@@ -278,6 +295,7 @@ class Module(nn.Module):
         kv_cache: KVCache | None = None,
         mem_seq: Sequence[at.Float[at.Array, "b lmem _d"] | None] | None = None,
         mem_mask: Sequence[at.Bool[at.Array, "b lmem"] | None] | None = None,
+        mem_k_positions: Sequence[at.Int[at.Array, "b lmem"] | None] | None = None,
         deterministic: bool = True,
     ) -> tuple[Sequence[at.Float[at.Array, "b _t _d"] | None], KVCache]:
         embedded = jax.tree.map(lambda e: e.astype(self.embed_dtype), embedded)
@@ -293,6 +311,7 @@ class Module(nn.Module):
             adarms_cond,
             mem_seq,
             mem_mask,
+            mem_k_positions,
             deterministic,
         )
 
