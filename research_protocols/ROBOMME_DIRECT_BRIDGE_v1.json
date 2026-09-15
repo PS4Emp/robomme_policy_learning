@@ -1,0 +1,54 @@
+{
+  "protocol_id": "ROBOMME-DIRECT-A-B-BRIDGE-v1.0",
+  "purpose": "Test whether temporal positional representation causally contributes to the post-retention residual observed in Question B.",
+  "cohort": {
+    "families": ["VideoUnmask", "InsertPeg", "VideoPlaceOrder"],
+    "episodes_per_family": [0, 5, 11, 16, 22, 27, 33, 38, 44, 49],
+    "scientific_units": 30
+  },
+  "input_histories": {
+    "source": "Question B retention-matched histories",
+    "retained_evidence": "same frozen 25R + 2D1 + 2D2 + 2D3 + 1Q0 semantic identities",
+    "semantic_order": "fixed within each content row",
+    "query_checkpoint_seed": "fixed"
+  },
+  "intervention": {
+    "content_rows": ["far", "middle", "recent"],
+    "temporal_position_columns": ["far", "middle", "recent"],
+    "design": "3x3",
+    "only_changed_variable_within_row": "temporal positional representation",
+    "identity_column": "row condition",
+    "off_diagonal_columns": "borrow temporal positions from the corresponding target condition for the same semantic identities"
+  },
+  "scientific_boundary": "initial inferred 16x8 action chunk",
+  "primary_bridge_metric": {
+    "name": "directional projection fraction",
+    "definition": "For directed source->target: flatten action chunks; delta_B = target-row identity output - source-row identity output; delta_T = source-row target-temporal output - source-row identity output; projection_fraction = dot(delta_T, delta_B) / dot(delta_B, delta_B).",
+    "interpretation": {
+      "positive": "temporal intervention moves the source output in the direction of the target matched-history output",
+      "near_zero": "little directional contribution",
+      "negative": "temporal intervention moves away from the target output"
+    }
+  },
+  "secondary_metrics": [
+    "MAE source identity vs source temporal-swapped output",
+    "MAE source temporal-swapped output vs target-row identity output",
+    "distance reduction toward target-row identity output",
+    "cosine alignment between temporal-intervention delta and Question-B residual delta"
+  ],
+  "aggregation": {
+    "directed_comparisons_per_episode": 6,
+    "report": [
+      "overall",
+      "by task family",
+      "by condition pair"
+    ]
+  },
+  "interpretation_rules": {
+    "positive_consistent_projection": "supports direct causal contribution of temporal positional representation to the Question B matched residual",
+    "mixed_or_zero_projection": "temporal position affects outputs but does not by itself explain the direction of the Question B residual",
+    "sole_mechanism_claim": false,
+    "behavior_claims": false
+  },
+  "hard_stop": "Any retained-identity, temporal-map, replay, cache, shape, or model-boundary invariant failure aborts the run."
+}
