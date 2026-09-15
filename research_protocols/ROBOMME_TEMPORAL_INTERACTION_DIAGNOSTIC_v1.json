@@ -1,0 +1,46 @@
+{
+  "analysis_id": "ROBOMME-TEMPORAL-CONTENT-INTERACTION-DIAGNOSTIC-v1.0",
+  "status": "post-hoc mechanistic diagnostic motivated by the frozen direct-bridge directional results",
+  "purpose": "Determine whether the strong source-target asymmetry in the direct bridge reflects a content/order x temporal-position interaction rather than a simple additive temporal-position effect.",
+  "data_source": "Existing Replication A 3x3 intervention matrices only; no new policy inference.",
+  "scientific_unit": "episode x unordered condition pair",
+  "condition_pairs": [
+    "far__middle",
+    "far__recent",
+    "middle__recent"
+  ],
+  "factorial_cells": {
+    "Y_AA": "content/order row A with temporal positions A",
+    "Y_AB": "content/order row A with temporal positions B",
+    "Y_BA": "content/order row B with temporal positions A",
+    "Y_BB": "content/order row B with temporal positions B"
+  },
+  "vector_definitions": {
+    "temporal_effect_in_A_row": "Y_AB - Y_AA",
+    "temporal_effect_in_B_row": "Y_BB - Y_BA",
+    "temporal_main_effect": "0.5 * ((Y_AB - Y_AA) + (Y_BB - Y_BA))",
+    "content_order_main_effect": "0.5 * ((Y_BA - Y_AA) + (Y_BB - Y_AB))",
+    "interaction": "(Y_BB - Y_BA) - (Y_AB - Y_AA)",
+    "native_pair_residual": "Y_BB - Y_AA"
+  },
+  "primary_diagnostics": [
+    "cosine between temporal_effect_in_A_row and temporal_effect_in_B_row",
+    "interaction L2 norm divided by native_pair_residual L2 norm",
+    "interaction L2 norm divided by mean L2 magnitude of the two row-specific temporal effects",
+    "temporal_main_effect projection fraction onto native_pair_residual",
+    "content_order_main_effect projection fraction onto native_pair_residual"
+  ],
+  "algebraic_check": "temporal_main_effect + content_order_main_effect must equal native_pair_residual within numerical tolerance",
+  "process_handling": "Compute all diagnostics independently in P1/P2/P3, then average the three nuisance-process values for each episode x unordered pair.",
+  "summary_statistics": {
+    "metrics": ["median", "25th_percentile", "75th_percentile"],
+    "report_levels": ["overall", "task_family", "condition_pair", "task_family_x_condition_pair"],
+    "inferential_tests": "none"
+  },
+  "interpretation": {
+    "row_temporal_cosine_near_one": "approximately additive temporal effect across content/order rows",
+    "row_temporal_cosine_near_zero_or_negative": "strong content/order dependence or reversal of the temporal effect",
+    "large_interaction_ratio": "temporal sensitivity depends strongly on which matched content/order layout is present",
+    "scope": "mechanistic action-chunk diagnostic only; no behavioral claim"
+  }
+}
