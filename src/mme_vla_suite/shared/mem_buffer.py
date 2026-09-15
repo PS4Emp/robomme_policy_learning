@@ -295,6 +295,7 @@ class MemoryBuffer:
         token_budget,
         token_per_image,
         step_idx,
+        temporal_pos_override=None,
     ):
         spatial_size = str(int(math.sqrt(token_per_image)))
         spatial_key = f"{spatial_size}x{spatial_size}"
@@ -305,94 +306,106 @@ class MemoryBuffer:
         sampled_pos_emb = self._load_emb(history_feats, indices_to_load, f"pos_emb_{spatial_key}")
         sampled_state_emb = self._load_emb(history_feats, indices_to_load, "state_emb")
 
-        temporal_pos_override_path = os.environ.get(
-            "MME_FRAMESAMP_TEMPORAL_POS_OVERRIDE_PATH"
-        )
-        if temporal_pos_override_path:
-            with open(temporal_pos_override_path, encoding="utf-8") as f:
-                temporal_pos_override = json.load(f)
-
-            override_step_idx = int(temporal_pos_override["step_idx"])
-            if override_step_idx != int(step_idx):
-                raise ValueError(
-                    f"FrameSamp temporal-position override step_idx "
-                    f"{override_step_idx} does not match current step_idx {step_idx}"
-                )
-            position_map = temporal_pos_override.get("position_map")
-            if not isinstance(position_map, list):
-                raise ValueError(
-                    "FrameSamp temporal-position override position_map must be a list"
-                )
-
-            source_indices = []
-            target_positions = []
-            for item in position_map:
-                if not isinstance(item, dict):
-                    raise ValueError(
-                        "FrameSamp temporal-position override entries must be objects"
-                    )
-                source_indices.append(int(item["source_index"]))
-                target_positions.append(int(item["target_temporal_position"]))
-            if len(set(source_indices)) != len(source_indices):
-                raise ValueError(
-                    "FrameSamp temporal-position override source indices must be unique"
-                )
-            if set(source_indices) != set(indices_to_load):
-                raise ValueError(
-                    "FrameSamp temporal-position override source indices must exactly "
-                    "match the selected FrameSamp indices"
-                )
-            if len(set(target_positions)) != len(target_positions):
-                raise ValueError(
-                    "FrameSamp temporal-position override target temporal positions "
-                    "must be unique"
-                )
-            if any(pos < 0 or pos > step_idx for pos in target_positions):
-                raise ValueError(
-                    "FrameSamp temporal-position override target temporal positions "
-                    f"must lie in [0, {step_idx}]"
-                )
-            if self.pos_emb_dim % 6 != 0:
-                raise ValueError(
-                    "FrameSamp temporal-position override requires pos_emb_dim "
-                    "divisible by 6"
-                )
-            if sampled_pos_emb.shape[-1] != self.pos_emb_dim:
-                raise ValueError(
-                    "FrameSamp temporal-position override positional embedding "
-                    f"dimension {sampled_pos_emb.shape[-1]} does not match "
-                    f"configured pos_emb_dim {self.pos_emb_dim}"
-                )
-            if self.pos_emb_dict is None or spatial_key not in self.pos_emb_dict:
-                raise ValueError(
-                    "FrameSamp temporal-position override requires positional "
-                    f"dictionary for {spatial_key}"
-                )
-            # PosEmb3D layout is:
-            #   2/6 temporal channels followed by 4/6 spatial channels.
-            temporal_dim = self.pos_emb_dim // 3
-            source_to_target = dict(
-                zip(source_indices, target_positions, strict=True)
+        if temporal_pos_override is None:
+            temporal_pos_override_path = os.environ.get(
+                "MME_FRAMESAMP_TEMPORAL_POS_OVERRIDE_PATH"
             )
+            if temporal_pos_override_path:
+                with open(temporal_pos_override_path, encoding="utf-8") as f:
+                    temporal_pos_override = json.load(f)
 
-            # Copy before intervention so stored history features remain untouched.
-            sampled_pos_emb = sampled_pos_emb.copy()
-
-            for slot, source_index in enumerate(indices_to_load):
-                target_position = source_to_target[source_index]
-                start = target_position * self.num_views
-                stop = (target_position + 1) * self.num_views
-                target_pos_emb = self.pos_emb_dict[spatial_key][start:stop]
-                if target_pos_emb.shape != sampled_pos_emb[slot].shape:
+        if temporal_pos_override is not None:
+            if not isinstance(temporal_pos_override, dict):
+                raise TypeError(
+                    f"FrameSamp temporal-position override must be a dict, got {type(temporal_pos_override).__name__}"
+                )
+            if "enabled" in temporal_pos_override:
+                if not isinstance(temporal_pos_override["enabled"], bool):
+                    raise TypeError(
+                        f"FrameSamp temporal-position override field 'enabled' must be a bool, got {type(temporal_pos_override['enabled']).__name__}"
+                    )
+            if temporal_pos_override.get("enabled", True):
+                override_step_idx = int(temporal_pos_override["step_idx"])
+                if override_step_idx != int(step_idx):
                     raise ValueError(
-                        "FrameSamp temporal-position override target positional "
-                        f"embedding shape {target_pos_emb.shape} does not match "
-                        f"selected frame shape {sampled_pos_emb[slot].shape}"
+                        f"FrameSamp temporal-position override step_idx "
+                        f"{override_step_idx} does not match current step_idx {step_idx}"
+                    )
+                position_map = temporal_pos_override.get("position_map")
+                if not isinstance(position_map, list):
+                    raise ValueError(
+                        "FrameSamp temporal-position override position_map must be a list"
                     )
 
-                sampled_pos_emb[slot, ..., :temporal_dim] = (
-                    target_pos_emb[..., :temporal_dim]
+                source_indices = []
+                target_positions = []
+                for item in position_map:
+                    if not isinstance(item, dict):
+                        raise ValueError(
+                            "FrameSamp temporal-position override entries must be objects"
+                        )
+                    source_indices.append(int(item["source_index"]))
+                    target_positions.append(int(item["target_temporal_position"]))
+                if len(set(source_indices)) != len(source_indices):
+                    raise ValueError(
+                        "FrameSamp temporal-position override source indices must be unique"
+                    )
+                if set(source_indices) != set(indices_to_load):
+                    raise ValueError(
+                        "FrameSamp temporal-position override source indices must exactly "
+                        "match the selected FrameSamp indices"
+                    )
+                if len(set(target_positions)) != len(target_positions):
+                    raise ValueError(
+                        "FrameSamp temporal-position override target temporal positions "
+                        "must be unique"
+                    )
+                if any(pos < 0 or pos > step_idx for pos in target_positions):
+                    raise ValueError(
+                        "FrameSamp temporal-position override target temporal positions "
+                        f"must lie in [0, {step_idx}]"
+                    )
+                if self.pos_emb_dim % 6 != 0:
+                    raise ValueError(
+                        "FrameSamp temporal-position override requires pos_emb_dim "
+                        "divisible by 6"
+                    )
+                if sampled_pos_emb.shape[-1] != self.pos_emb_dim:
+                    raise ValueError(
+                        "FrameSamp temporal-position override positional embedding "
+                        f"dimension {sampled_pos_emb.shape[-1]} does not match "
+                        f"configured pos_emb_dim {self.pos_emb_dim}"
+                    )
+                if self.pos_emb_dict is None or spatial_key not in self.pos_emb_dict:
+                    raise ValueError(
+                        "FrameSamp temporal-position override requires positional "
+                        f"dictionary for {spatial_key}"
+                    )
+                # PosEmb3D layout is:
+                #   2/6 temporal channels followed by 4/6 spatial channels.
+                temporal_dim = self.pos_emb_dim // 3
+                source_to_target = dict(
+                    zip(source_indices, target_positions, strict=True)
                 )
+
+                # Copy before intervention so stored history features remain untouched.
+                sampled_pos_emb = sampled_pos_emb.copy()
+
+                for slot, source_index in enumerate(indices_to_load):
+                    target_position = source_to_target[source_index]
+                    start = target_position * self.num_views
+                    stop = (target_position + 1) * self.num_views
+                    target_pos_emb = self.pos_emb_dict[spatial_key][start:stop]
+                    if target_pos_emb.shape != sampled_pos_emb[slot].shape:
+                        raise ValueError(
+                            "FrameSamp temporal-position override target positional "
+                            f"embedding shape {target_pos_emb.shape} does not match "
+                            f"selected frame shape {sampled_pos_emb[slot].shape}"
+                        )
+
+                    sampled_pos_emb[slot, ..., :temporal_dim] = (
+                        target_pos_emb[..., :temporal_dim]
+                    )
 
         mask = np.ones((sampled_img_emb.shape[0]), dtype=np.bool_)
                 
@@ -411,7 +424,16 @@ class MemoryBuffer:
         return img_emb, pos_emb, state_emb, mask
             
     
-    def prepare_frame_sampling(self, step_idx, token_budget, token_per_image, history_feats_gather_fn,  *args, **kwargs):
+    def prepare_frame_sampling(
+        self,
+        step_idx,
+        token_budget,
+        token_per_image,
+        history_feats_gather_fn,
+        *args,
+        temporal_pos_override=None,
+        **kwargs,
+    ):
         indices_to_load = self.get_frame_sampling_indices(step_idx, token_budget, token_per_image)
 
         override_path = os.environ.get("MME_FRAMESAMP_OVERRIDE_PATH")
@@ -466,6 +488,7 @@ class MemoryBuffer:
             token_budget,
             token_per_image,
             step_idx,
+            temporal_pos_override=temporal_pos_override,
         )
 
 

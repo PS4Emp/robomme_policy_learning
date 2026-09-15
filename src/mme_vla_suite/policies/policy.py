@@ -75,12 +75,36 @@ class MME_VLA_Policy:
 
     @override
     def infer(self, obs: dict) -> dict:
+        obs = dict(obs)
+        if "reset_rng" in obs:
+            reset_rng = obs.pop("reset_rng")
+            if not isinstance(reset_rng, bool):
+                raise TypeError(f"reset_rng must be a bool, got {type(reset_rng).__name__}")
+            if reset_rng:
+                self._rng = jax.random.key(self._seed)
+
+        temporal_pos_override = obs.pop("temporal_pos_override", None)
+        if temporal_pos_override is not None:
+            if not isinstance(temporal_pos_override, dict):
+                raise TypeError(
+                    f"temporal_pos_override must be a dict, got {type(temporal_pos_override).__name__}"
+                )
+            if (
+                self.config is None
+                or self.config.representation_type != "perceptual"
+                or getattr(self.config, "perceptual_memory", None) is None
+                or self.config.perceptual_memory.type != "frame_sampling"
+            ):
+                raise ValueError(
+                    "temporal_pos_override is only supported for perceptual FrameSamp policies"
+                )
+
         if self.config is not None and self.config.representation_type != "symbolic":
             assert len(self.mem_buffer._history_feats) > 0, \
                 "history feats is empty, add buffer first"
                                         
         inputs = jax.tree.map(lambda x: x, obs)
-        inputs = self._prepare_history(inputs)
+        inputs = self._prepare_history(inputs, temporal_pos_override=temporal_pos_override)
         inputs = self._input_transform(inputs)
         observation = HistAugObservation.from_dict(
             jax.tree.map(lambda x: jnp.asarray(x)[np.newaxis, ...], inputs)
@@ -126,7 +150,7 @@ class MME_VLA_Policy:
         else:
             return (state - self.state_norm_stats.mean) / (self.state_norm_stats.std + 1e-6)
 
-    def _prepare_history(self, inputs: dict) -> dict:
+    def _prepare_history(self, inputs: dict, temporal_pos_override: dict | None = None) -> dict:
         if self.config is None or self.config.representation_type == "symbolic":
             return inputs
         
@@ -151,7 +175,12 @@ class MME_VLA_Policy:
                 token_per_image = self.config.token_per_image
                 static_image_emb, static_pos_emb, static_state_emb, static_mask = \
                     self.mem_buffer.prepare_frame_sampling(
-                        self.step_idx, token_budget, token_per_image, history_feats_gather_fn)
+                        self.step_idx,
+                        token_budget,
+                        token_per_image,
+                        history_feats_gather_fn,
+                        temporal_pos_override=temporal_pos_override,
+                    )
             
             inputs["static_image_emb"] = static_image_emb
             inputs["static_pos_emb"] = static_pos_emb
