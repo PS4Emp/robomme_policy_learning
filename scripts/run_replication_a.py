@@ -25,9 +25,11 @@ guess them.
 import argparse
 import csv
 import hashlib
+import importlib.metadata
 import json
 import logging
 import os
+import platform
 import subprocess
 import sys
 from pathlib import Path
@@ -38,8 +40,13 @@ logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s: %(m
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 ROBOMME_EXAMPLES = REPO_ROOT / "examples" / "robomme"
+ROBOMME_BENCHMARK_SRC = REPO_ROOT / "third_party" / "robomme_benchmark" / "src"
+
 if str(ROBOMME_EXAMPLES) not in sys.path:
     sys.path.insert(0, str(ROBOMME_EXAMPLES))
+
+if str(ROBOMME_BENCHMARK_SRC) not in sys.path:
+    sys.path.insert(0, str(ROBOMME_BENCHMARK_SRC))
 from controlled_recency import (
     CONDITION_ORDERS,
     assemble_condition,
@@ -51,6 +58,10 @@ from env_runner import EnvRunner
 from utils import pack_buffer
 
 PROTOCOL_ID = "ROBOMME-RETENTION-MATCHED-TEMPORAL-A-v1.0"
+MODEL_ID = "Yinpei/perceptual-framesamp-modul"
+CHECKPOINT_ID = "79999"
+MODEL_ID = "Yinpei/perceptual-framesamp-modul"
+CHECKPOINT_ID = "79999"
 
 CONDITIONS = ("far", "middle", "recent")
 FROZEN_FAMILIES = ("VideoUnmask", "InsertPeg", "VideoPlaceOrder")
@@ -185,6 +196,229 @@ def build_retained_identity_manifest(bundle) -> list[dict]:
     return manifest
 
 
+def assembly_identity_positions(assembly) -> dict[tuple[str, int], int]:
+    positions = {}
+
+    for entry in assembly.metadata["frame_index_map"]:
+        key = (
+            entry["segment_label"],
+            int(entry["source_frame_index"]),
+        )
+
+        if key in positions:
+            raise RuntimeError(
+                f"Duplicate semantic identity in {assembly.condition}: {key}"
+            )
+
+        positions[key] = int(entry["assembled_index"])
+
+    return positions
+
+
+def retained_entries_for_row(assembly, retained_manifest: list[dict]) -> list[dict]:
+    wanted = {
+        (entry["segment"], int(entry["source_frame_index"]))
+        for entry in retained_manifest
+    }
+    retained = []
+
+    for entry in assembly.metadata["frame_index_map"]:
+        key = (
+            entry["segment_label"],
+            int(entry["source_frame_index"]),
+        )
+        if key in wanted:
+            retained.append(entry)
+
+    if len(retained) != EXPECTED_RETAINED_TOTAL:
+        raise RuntimeError(
+            f"{assembly.condition}: expected {EXPECTED_RETAINED_TOTAL} retained "
+            f"entries, got {len(retained)}"
+        )
+
+    counts = {label: 0 for label in EXPECTED_RETAINED_COUNTS}
+    for entry in retained:
+        counts[entry["segment_label"]] += 1
+
+    if counts != EXPECTED_RETAINED_COUNTS:
+        raise RuntimeError(
+            f"{assembly.condition}: expected retained counts "
+            f"{EXPECTED_RETAINED_COUNTS}, got {counts}"
+        )
+    assembled_indices = [int(entry["assembled_index"]) for entry in retained]
+
+    if assembled_indices != sorted(assembled_indices):
+        raise RuntimeError(
+            f"{assembly.condition}: retained assembled indices are not sorted"
+        )
+
+    if len(set(assembled_indices)) != EXPECTED_RETAINED_TOTAL:
+        raise RuntimeError(
+            f"{assembly.condition}: retained assembled indices are not unique"
+        )
+
+    return retained
+
+
+def make_temporal_position_map(
+    retained_entries: list[dict],
+    target_positions: dict[tuple[str, int], int],
+) -> list[dict]:
+    position_map = []
+
+    for entry in retained_entries:
+        key = (
+            entry["segment_label"],
+            int(entry["source_frame_index"]),
+        )
+
+        if key not in target_positions:
+            raise RuntimeError(
+                f"Target layout is missing retained semantic identity {key}"
+            )
+        position_map.append(
+            {
+                "source_index": int(entry["assembled_index"]),
+                "target_temporal_position": int(target_positions[key]),
+            }
+        )
+
+    source_indices = [x["source_index"] for x in position_map]
+    target_positions_list = [
+        x["target_temporal_position"] for x in position_map
+    ]
+
+    if len(set(source_indices)) != EXPECTED_RETAINED_TOTAL:
+        raise RuntimeError("Temporal position map has duplicate source indices")
+
+    if len(set(target_positions_list)) != EXPECTED_RETAINED_TOTAL:
+        raise RuntimeError("Temporal position map has duplicate target positions")
+
+    return position_map
+
+
+def action_metrics(reference: np.ndarray, candidate: np.ndarray) -> dict[str, float]:
+    ref = np.asarray(reference, dtype=np.float64)
+    cand = np.asarray(candidate, dtype=np.float64)
+
+    if ref.shape != (16, 8) or cand.shape != (16, 8):
+        raise RuntimeError(
+            f"Scientific action chunks must both be (16, 8); got "
+            f"{ref.shape} and {cand.shape}"
+        )
+
+    diff = cand - ref
+
+    l2 = float(np.linalg.norm(diff))
+    ref_l2 = float(np.linalg.norm(ref))
+
+    if ref_l2 == 0.0:
+        rho = 0.0 if l2 == 0.0 else float("inf")
+    else:
+        rho = l2 / ref_l2
+    return {
+        "mae": float(np.mean(np.abs(diff))),
+        "l2_frobenius": l2,
+        "max_abs": float(np.max(np.abs(diff))),
+        "relative_frobenius_rho": float(rho),
+    }
+
+
+def validate_replication_a_policy(policy) -> dict[str, int]:
+    if policy.mem_buffer is None:
+        raise RuntimeError("Replication A requires a perceptual FrameSamp policy")
+
+    if getattr(policy.config, "perceptual_memory", None) is None:
+        raise RuntimeError("Replication A requires perceptual memory")
+
+    if policy.config.perceptual_memory.type != "frame_sampling":
+        raise RuntimeError(
+            "Replication A requires perceptual_memory.type=frame_sampling"
+        )
+
+    actual = {
+        "budget": int(policy.config.budget),
+        "token_per_image": int(policy.config.token_per_image),
+        "num_views": int(policy.config.num_views),
+        "pos_emb_dim": int(policy.mem_buffer.pos_emb_dim),
+        "temporal_dim": int(policy.mem_buffer.pos_emb_dim // 3),
+    }
+    expected = {
+        "budget": 512,
+        "token_per_image": 16,
+        "num_views": 1,
+        "pos_emb_dim": 768,
+        "temporal_dim": 256,
+    }
+
+    if actual != expected:
+        raise RuntimeError(
+            f"Replication A loaded-config mismatch: expected {expected}, got {actual}"
+        )
+
+    return actual
+
+
+def build_row_intervention_plan(
+    content_condition: str,
+    assemblies: dict,
+    retained_manifest: list[dict],
+) -> dict:
+    if content_condition not in CONDITIONS:
+        raise RuntimeError(f"Unknown content condition: {content_condition}")
+
+    assembly = assemblies[content_condition]
+    retained_entries = retained_entries_for_row(
+        assembly,
+        retained_manifest,
+    )
+
+    selected_indices = [
+        int(entry["assembled_index"])
+        for entry in retained_entries
+    ]
+    positions_by_condition = {
+        condition: assembly_identity_positions(assemblies[condition])
+        for condition in CONDITIONS
+    }
+
+    temporal_maps = {
+        condition: make_temporal_position_map(
+            retained_entries,
+            positions_by_condition[condition],
+        )
+        for condition in CONDITIONS
+    }
+
+    expected_identity = [
+        {
+            "source_index": idx,
+            "target_temporal_position": idx,
+        }
+        for idx in selected_indices
+    ]
+    if temporal_maps[content_condition] != expected_identity:
+        raise RuntimeError(
+            f"{content_condition}: own-condition temporal map is not an exact identity"
+        )
+
+    offdiagonal_conditions = [
+        condition
+        for condition in CONDITIONS
+        if condition != content_condition
+    ]
+
+    return {
+        "content_condition": content_condition,
+        "step_idx": int(assembly.exec_start_idx),
+        "selected_indices": selected_indices,
+        "retained_entries": retained_entries,
+        "identity_map": temporal_maps[content_condition],
+        "offdiagonal_conditions": offdiagonal_conditions,
+        "temporal_maps": temporal_maps,
+    }
+
+
 def hash_buffer_feats(history_feats: dict) -> dict[int, dict[str, str]]:
     """Compute sha256 digests for all cached history feature arrays."""
     hashes = {}
@@ -245,6 +479,420 @@ def _initial_action_chunk(actions):
         )
     logging.info("Raw inferred action shape: %s; validating first 16x8 chunk", actions.shape)
     return actions[:16, :8]
+
+
+def build_replication_a_unit_inputs(
+    query_family: str,
+    query_episode: int,
+    artifact_dir: Path,
+    max_steps: int,
+) -> dict:
+    if query_family not in FROZEN_FAMILIES:
+        raise RuntimeError(
+            f"{query_family} is not a frozen Replication A family"
+        )
+    if int(query_episode) not in FROZEN_EPISODES:
+        raise RuntimeError(
+            f"Episode {query_episode} is not in frozen Replication A cohort"
+        )
+
+    assignment_row, distractors = read_frozen_assignment(
+        query_family,
+        query_episode,
+    )
+
+    query_runner = EnvRunner(
+        query_family,
+        artifact_dir,
+        max_steps=max_steps,
+    )
+
+    try:
+        query_runner.make_env(query_episode)
+        query_pre_traj = query_runner.get_init_obs()
+    finally:
+        query_runner.close_env()
+    distractor_segments = load_distractor_segments(
+        distractors,
+        EnvRunner,
+        artifact_dir,
+        max_steps,
+    )
+
+    bundle = build_bundle(
+        query_pre_traj,
+        query_family,
+        query_episode,
+        distractor_segments,
+    )
+
+    retained_manifest = build_retained_identity_manifest(bundle)
+
+    assemblies = {
+        condition: assemble_condition(
+            bundle,
+            condition,
+            query_family,
+            query_episode,
+            query_pre_traj["task_goal"],
+        )
+        for condition in CONDITIONS
+    }
+    step_indices = {
+        condition: int(assembly.exec_start_idx)
+        for condition, assembly in assemblies.items()
+    }
+
+    if len(set(step_indices.values())) != 1:
+        raise RuntimeError(
+            f"FAR/MIDDLE/RECENT full-history step_idx mismatch: {step_indices}"
+        )
+
+    query_obs = {
+        "observation/image": np.asarray(bundle["Q0"].images[0]).copy(),
+        "observation/wrist_image": np.asarray(
+            bundle["Q0"].wrist_images[0]
+        ).copy(),
+        "observation/state": np.asarray(bundle["Q0"].states[0]).copy(),
+        "prompt": query_pre_traj["task_goal"],
+    }
+    return {
+        "assignment_row": assignment_row,
+        "distractors": distractors,
+        "bundle": bundle,
+        "retained_manifest": retained_manifest,
+        "assemblies": assemblies,
+        "query_obs": query_obs,
+        "task_goal": query_pre_traj["task_goal"],
+        "step_idx": next(iter(step_indices.values())),
+    }
+
+
+def run_replication_a_content_row(
+    policy,
+    assembly,
+    assemblies: dict,
+    retained_manifest: list[dict],
+    query_obs: dict,
+    override_dir: Path,
+) -> dict:
+    plan = build_row_intervention_plan(
+        assembly.condition,
+        assemblies,
+        retained_manifest,
+    )
+
+    policy.reset()
+    policy.add_buffer(
+        pack_buffer(
+            assembly.images,
+            assembly.states,
+            assembly.exec_start_idx,
+        )
+    )
+    if int(policy.step_idx) != int(plan["step_idx"]):
+        raise RuntimeError(
+            f'{assembly.condition}: policy.step_idx={policy.step_idx} '
+            f'does not match planned step_idx={plan["step_idx"]}'
+        )
+
+    override_dir.mkdir(parents=True, exist_ok=True)
+    index_override_path = override_dir / f'{assembly.condition}_index_override.json'
+
+    if index_override_path.exists():
+        raise FileExistsError(index_override_path)
+
+    index_override_path.write_text(
+        json.dumps(
+            {
+                "step_idx": int(plan["step_idx"]),
+                "indices_to_load": plan["selected_indices"],
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    prior_index_override = os.environ.get("MME_FRAMESAMP_OVERRIDE_PATH")
+    prior_temporal_override = os.environ.get(
+        "MME_FRAMESAMP_TEMPORAL_POS_OVERRIDE_PATH"
+    )
+
+    if prior_index_override is not None or prior_temporal_override is not None:
+        raise RuntimeError(
+            "Replication A runner requires FrameSamp override environment "
+            "variables to be unset before each scientific row"
+        )
+
+    os.environ["MME_FRAMESAMP_OVERRIDE_PATH"] = str(index_override_path)
+
+    try:
+        step_idx = int(plan["step_idx"])
+        identity_map = plan["identity_map"]
+        offdiag_1_condition, offdiag_2_condition = plan[
+            "offdiagonal_conditions"
+        ]
+        offdiag_1_map = plan["temporal_maps"][offdiag_1_condition]
+        offdiag_2_map = plan["temporal_maps"][offdiag_2_condition]
+
+        cache_hashes_before = hash_buffer_feats(
+            policy.mem_buffer._history_feats
+        )
+        gather_fn = policy.mem_buffer.default_history_feats_gather_fn
+        temporal_dim = policy.mem_buffer.pos_emb_dim // 3
+
+        disabled_tensors = _prepare_tensors(
+            policy,
+            step_idx,
+            gather_fn,
+            temporal_pos_override={"enabled": False},
+        )
+        identity_tensors = _prepare_tensors(
+            policy,
+            step_idx,
+            gather_fn,
+            temporal_pos_override={
+                "enabled": True,
+                "step_idx": step_idx,
+                "position_map": identity_map,
+            },
+        )
+        offdiag_1_tensors = _prepare_tensors(
+            policy,
+            step_idx,
+            gather_fn,
+            temporal_pos_override={
+                "enabled": True,
+                "step_idx": step_idx,
+                "position_map": offdiag_1_map,
+            },
+        )
+        offdiag_2_tensors = _prepare_tensors(
+            policy,
+            step_idx,
+            gather_fn,
+            temporal_pos_override={
+                "enabled": True,
+                "step_idx": step_idx,
+                "position_map": offdiag_2_map,
+            },
+        )
+
+        dis_img, dis_pos, dis_state, dis_mask = disabled_tensors
+        id_img, id_pos, id_state, id_mask = identity_tensors
+        od1_img, od1_pos, od1_state, od1_mask = offdiag_1_tensors
+        od2_img, od2_pos, od2_state, od2_mask = offdiag_2_tensors
+
+        _assert_all_equal(
+            dis_img,
+            [
+                ("identity", id_img),
+                (offdiag_1_condition, od1_img),
+                (offdiag_2_condition, od2_img),
+            ],
+            f"{assembly.condition}: sampled image embeddings",
+        )
+        _assert_all_equal(
+            dis_state,
+            [
+                ("identity", id_state),
+                (offdiag_1_condition, od1_state),
+                (offdiag_2_condition, od2_state),
+            ],
+            f"{assembly.condition}: sampled state embeddings",
+        )
+        _assert_all_equal(
+            dis_mask,
+            [
+                ("identity", id_mask),
+                (offdiag_1_condition, od1_mask),
+                (offdiag_2_condition, od2_mask),
+            ],
+            f"{assembly.condition}: masks",
+        )
+        _assert_spatial_equal(
+            dis_pos,
+            [
+                ("identity", id_pos),
+                (offdiag_1_condition, od1_pos),
+                (offdiag_2_condition, od2_pos),
+            ],
+            temporal_dim,
+        )
+        np.testing.assert_array_equal(
+            dis_pos[..., :temporal_dim],
+            id_pos[..., :temporal_dim],
+            err_msg=(
+                f"{assembly.condition}: disabled temporal channels "
+                "!= identity temporal channels"
+            ),
+        )
+
+        _assert_temporal_confined(
+            dis_pos,
+            od1_pos,
+            temporal_dim,
+            f"{assembly.condition}->{offdiag_1_condition}",
+        )
+        _assert_temporal_confined(
+            dis_pos,
+            od2_pos,
+            temporal_dim,
+            f"{assembly.condition}->{offdiag_2_condition}",
+        )
+
+        od1_temporal_delta = float(
+            np.max(
+                np.abs(
+                    dis_pos[..., :temporal_dim].astype(np.float64)
+                    - od1_pos[..., :temporal_dim].astype(np.float64)
+                )
+            )
+        )
+        od2_temporal_delta = float(
+            np.max(
+                np.abs(
+                    dis_pos[..., :temporal_dim].astype(np.float64)
+                    - od2_pos[..., :temporal_dim].astype(np.float64)
+                )
+            )
+        )
+
+        if od1_temporal_delta == 0.0 or od2_temporal_delta == 0.0:
+            raise RuntimeError(
+                f"{assembly.condition}: zero off-diagonal temporal delta"
+            )
+
+        cache_hashes_after_tensors = hash_buffer_feats(
+            policy.mem_buffer._history_feats
+        )
+        if cache_hashes_before != cache_hashes_after_tensors:
+            raise RuntimeError(
+                f"{assembly.condition}: cache mutated during tensor checks"
+            )
+        call_specs = [
+            (
+                "disabled",
+                {"enabled": False},
+            ),
+            (
+                "identity",
+                {
+                    "enabled": True,
+                    "step_idx": step_idx,
+                    "position_map": identity_map,
+                },
+            ),
+            (
+                f"to_{offdiag_1_condition}",
+                {
+                    "enabled": True,
+                    "step_idx": step_idx,
+                    "position_map": offdiag_1_map,
+                },
+            ),
+            (
+                f"to_{offdiag_2_condition}",
+                {
+                    "enabled": True,
+                    "step_idx": step_idx,
+                    "position_map": offdiag_2_map,
+                },
+            ),
+            (
+                "identity_replay",
+                {
+                    "enabled": True,
+                    "step_idx": step_idx,
+                                   "position_map": identity_map,
+                },
+            ),
+        ]
+
+        raw_actions = {}
+        chunks = {}
+        infer_times_ms = {}
+
+        for name, temporal_override in call_specs:
+            response = policy.infer(
+                {
+                    **query_obs,
+                    "reset_rng": True,
+                    "temporal_pos_override": temporal_override,
+                }
+            )
+
+            raw = np.asarray(response["actions"])
+            chunk = _initial_action_chunk(raw)
+
+            raw_actions[name] = raw
+            chunks[name] = chunk
+            infer_times_ms[name] = float(
+                response.get("infer_time_ms", float("nan"))
+            )
+        np.testing.assert_array_equal(
+            chunks["disabled"],
+            chunks["identity"],
+            err_msg=(
+                f"{assembly.condition}: disabled chunk != identity chunk"
+            ),
+        )
+        np.testing.assert_array_equal(
+            chunks["identity"],
+            chunks["identity_replay"],
+            err_msg=(
+                f"{assembly.condition}: identity chunk != identity replay"
+            ),
+        )
+
+        cache_hashes_after_inference = hash_buffer_feats(
+            policy.mem_buffer._history_feats
+        )
+        if cache_hashes_before != cache_hashes_after_inference:
+            raise RuntimeError(
+                f"{assembly.condition}: cache mutated during inference calls"
+            )
+
+        metrics = {
+            offdiag_1_condition: action_metrics(
+                chunks["identity"],
+                chunks[f"to_{offdiag_1_condition}"],
+            ),
+            offdiag_2_condition: action_metrics(
+                chunks["identity"],
+                chunks[f"to_{offdiag_2_condition}"],
+            ),
+        }
+        return {
+            "content_condition": assembly.condition,
+            "step_idx": step_idx,
+            "selected_indices": plan["selected_indices"],
+            "offdiagonal_conditions": plan["offdiagonal_conditions"],
+            "temporal_maps": plan["temporal_maps"],
+            "temporal_tensor_max_delta": {
+                offdiag_1_condition: od1_temporal_delta,
+                offdiag_2_condition: od2_temporal_delta,
+            },
+            "raw_actions": raw_actions,
+            "chunks_16x8": chunks,
+            "raw_action_shapes": {
+                name: list(value.shape)
+                for name, value in raw_actions.items()
+            },
+            "infer_times_ms": infer_times_ms,
+            "metrics_vs_identity": metrics,
+            "cache_hashes_before": cache_hashes_before,
+            "cache_hashes_after_tensors": cache_hashes_after_tensors,
+            "cache_hashes_after_inference": cache_hashes_after_inference,
+            "index_override_path": str(index_override_path),
+            "all_invariants_passed": True,
+        }
+
+    finally:
+        os.environ.pop("MME_FRAMESAMP_OVERRIDE_PATH", None)
+        os.environ.pop(
+            "MME_FRAMESAMP_TEMPORAL_POS_OVERRIDE_PATH",
+            None,
+        )
 
 
 def run_in_process_validation(policy):
@@ -557,6 +1205,313 @@ def run_in_process_validation(policy):
 
     logging.info("ALL IN-PROCESS INVARIANTS SATISFIED FOR REPLICATION A.")
 
+def save_replication_a_unit_bundle(
+    output_dir: Path,
+    *,
+    unit_inputs: dict,
+    row_results: dict,
+    query_family: str,
+    query_episode: int,
+    process_block: str,
+    checkpoint_dir: Path,
+    seed: int,
+    loaded_config: dict,
+) -> tuple[Path, Path]:
+    output_dir.mkdir(parents=True, exist_ok=False)
+
+    npz_arrays = {}
+    rows_json = {}
+
+    for condition in CONDITIONS:
+        row = row_results[condition]
+
+        for call_name, array in row["raw_actions"].items():
+            npz_arrays[
+                f"{condition}__{call_name}__raw_actions"
+            ] = np.asarray(array)
+
+        for call_name, array in row["chunks_16x8"].items():
+            npz_arrays[
+                f"{condition}__{call_name}__chunk16x8"
+            ] = np.asarray(array)
+        selected_set = set(int(x) for x in row["selected_indices"])
+        assembly = unit_inputs["assemblies"][condition]
+
+        retained_provenance = [
+            entry
+            for entry in assembly.metadata["frame_index_map"]
+            if int(entry["assembled_index"]) in selected_set
+        ]
+
+        row_json = {
+            key: value
+            for key, value in row.items()
+            if key not in ("raw_actions", "chunks_16x8")
+        }
+        row_json["retained_provenance"] = retained_provenance
+        row_json["assembly_metadata"] = assembly.metadata
+        rows_json[condition] = row_json
+
+    npz_path = output_dir / "actions_and_chunks.npz"
+    np.savez_compressed(npz_path, **npz_arrays)
+
+    def package_version(name: str) -> str:
+        try:
+            return importlib.metadata.version(name)
+        except importlib.metadata.PackageNotFoundError:
+            return "not-installed"
+    try:
+        gpu = subprocess.check_output(
+            [
+                "nvidia-smi",
+                "--query-gpu=name,driver_version,memory.total",
+                "--format=csv,noheader",
+            ],
+            text=True,
+        ).strip()
+    except Exception as exc:
+        gpu = f"unavailable: {type(exc).__name__}: {exc}"
+
+    git_sha = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"],
+        cwd=REPO_ROOT,
+        text=True,
+    ).strip()
+    result = {
+        "protocol_id": PROTOCOL_ID,
+        "scope": "open-loop initial inference only; no robot execution",
+        "scientific_boundary": "initial inferred 16x8 action chunk",
+        "query_family": query_family,
+        "query_episode": int(query_episode),
+        "process_block": process_block,
+        "process_role": "technical nuisance block; not scientific N",
+        "task_goal": unit_inputs["task_goal"],
+        "model_id": MODEL_ID,
+        "checkpoint_id": CHECKPOINT_ID,
+        "checkpoint_path": str(checkpoint_dir.resolve()),
+        "configured_seed": int(seed),
+        "loaded_config": loaded_config,
+        "git_commit": git_sha,
+        "assignment_source_path": str(ASSIGNMENT_SOURCE.resolve()),
+        "assignment_source_sha256": sha256_file(ASSIGNMENT_SOURCE),
+        "frozen_30_windows_manifest_sha256": (
+            FROZEN_30_WINDOWS_MANIFEST_SHA256
+        ),
+        "assignment_row": unit_inputs["assignment_row"],
+        "distractors": [
+            {
+                "label": f"D{i}",
+                "family": family,
+                "episode": int(episode),
+            }
+            for i, (family, episode) in enumerate(
+                unit_inputs["distractors"],
+                start=1,
+            )
+        ],
+        "frozen_allocation": EXPECTED_RETAINED_COUNTS,
+        "r_selection_rule": (
+            "deterministic endpoint-inclusive uniform spacing"
+        ),
+        "distractor_retained_source_indices": list(
+            DISTRACTOR_RETAINED_SOURCE_INDICES
+        ),
+        "retained_identity_manifest": unit_inputs["retained_manifest"],
+        "software": {
+            "python": platform.python_version(),
+            "numpy": package_version("numpy"),
+            "jax": package_version("jax"),
+            "jaxlib": package_version("jaxlib"),
+            "flax": package_version("flax"),
+        },
+        "gpu": gpu,
+        "actions_npz_file": npz_path.name,
+        "actions_npz_sha256": sha256_file(npz_path),
+        "rows": rows_json,
+        "analysis_rules": {
+            "causal_comparisons": "strictly within content row",
+            "process_is_scientific_n": False,
+            "behavioral_claim_permitted": False,
+            "natural_interference_explanation_permitted": False,
+        },
+        "all_invariants_passed": True,
+    }
+
+    result_path = output_dir / "result.json"
+    result_path.write_text(
+        json.dumps(result, indent=2, allow_nan=False),
+        encoding="utf-8",
+    )
+    manifest = {
+        "protocol_id": PROTOCOL_ID,
+        "result_file": result_path.name,
+        "result_sha256": sha256_file(result_path),
+        "actions_npz_file": npz_path.name,
+        "actions_npz_sha256": sha256_file(npz_path),
+    }
+
+    manifest_path = output_dir / "bundle_manifest.json"
+    manifest_path.write_text(
+        json.dumps(manifest, indent=2),
+        encoding="utf-8",
+    )
+
+    return result_path, manifest_path
+
+
+def save_replication_a_unit_bundle(
+    output_dir: Path,
+    *,
+    unit_inputs: dict,
+    row_results: dict,
+    query_family: str,
+    query_episode: int,
+    process_block: str,
+    checkpoint_dir: Path,
+    seed: int,
+    loaded_config: dict,
+) -> tuple[Path, Path]:
+    output_dir.mkdir(parents=True, exist_ok=False)
+
+    npz_arrays = {}
+    rows_json = {}
+
+    for condition in CONDITIONS:
+        row = row_results[condition]
+
+        for call_name, array in row["raw_actions"].items():
+            npz_arrays[
+                f"{condition}__{call_name}__raw_actions"
+            ] = np.asarray(array)
+
+        for call_name, array in row["chunks_16x8"].items():
+            npz_arrays[
+                f"{condition}__{call_name}__chunk16x8"
+            ] = np.asarray(array)
+
+        selected_set = set(int(x) for x in row["selected_indices"])
+        assembly = unit_inputs["assemblies"][condition]
+
+        retained_provenance = [
+            entry
+            for entry in assembly.metadata["frame_index_map"]
+            if int(entry["assembled_index"]) in selected_set
+        ]
+        row_json = {
+            key: value
+            for key, value in row.items()
+            if key not in ("raw_actions", "chunks_16x8")
+        }
+        row_json["retained_provenance"] = retained_provenance
+        row_json["assembly_metadata"] = assembly.metadata
+        rows_json[condition] = row_json
+
+    npz_path = output_dir / "actions_and_chunks.npz"
+    np.savez_compressed(npz_path, **npz_arrays)
+    def package_version(name: str) -> str:
+        try:
+            return importlib.metadata.version(name)
+        except importlib.metadata.PackageNotFoundError:
+            return "not-installed"
+
+    try:
+        gpu = subprocess.check_output(
+            [
+                "nvidia-smi",
+                "--query-gpu=name,driver_version,memory.total",
+                "--format=csv,noheader",
+            ],
+            text=True,
+        ).strip()
+    except Exception as exc:
+        gpu = f"unavailable: {type(exc).__name__}: {exc}"
+
+    git_sha = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"],
+        cwd=REPO_ROOT,
+        text=True,
+    ).strip()
+    result = {
+        "protocol_id": PROTOCOL_ID,
+        "scope": "open-loop initial inference only; no robot execution",
+        "scientific_boundary": "initial inferred 16x8 action chunk",
+        "query_family": query_family,
+        "query_episode": int(query_episode),
+        "process_block": process_block,
+        "process_role": "technical nuisance block; not scientific N",
+        "task_goal": unit_inputs["task_goal"],
+        "model_id": MODEL_ID,
+        "checkpoint_id": CHECKPOINT_ID,
+        "checkpoint_path": str(checkpoint_dir.resolve()),
+        "configured_seed": int(seed),
+        "loaded_config": loaded_config,
+        "git_commit": git_sha,
+        "assignment_source_path": str(ASSIGNMENT_SOURCE.resolve()),
+        "assignment_source_sha256": sha256_file(ASSIGNMENT_SOURCE),
+        "frozen_30_windows_manifest_sha256": (
+            FROZEN_30_WINDOWS_MANIFEST_SHA256
+        ),
+        "assignment_row": unit_inputs["assignment_row"],
+        "distractors": [
+            {
+                "label": f"D{i}",
+                "family": family,
+                "episode": int(episode),
+            }
+            for i, (family, episode) in enumerate(
+                unit_inputs["distractors"],
+                start=1,
+            )
+        ],
+        "frozen_allocation": EXPECTED_RETAINED_COUNTS,
+        "r_selection_rule": (
+            "deterministic endpoint-inclusive uniform spacing"
+        ),
+        "distractor_retained_source_indices": list(
+            DISTRACTOR_RETAINED_SOURCE_INDICES
+        ),
+        "retained_identity_manifest": unit_inputs["retained_manifest"],
+        "software": {
+            "python": platform.python_version(),
+            "numpy": package_version("numpy"),
+            "jax": package_version("jax"),
+            "jaxlib": package_version("jaxlib"),
+            "flax": package_version("flax"),
+        },
+        "gpu": gpu,
+        "actions_npz_file": npz_path.name,
+        "actions_npz_sha256": sha256_file(npz_path),
+        "rows": rows_json,
+        "analysis_rules": {
+            "causal_comparisons": "strictly within content row",
+            "process_is_scientific_n": False,
+            "behavioral_claim_permitted": False,
+            "natural_interference_explanation_permitted": False,
+        },
+        "all_invariants_passed": True,
+    }
+
+    result_path = output_dir / "result.json"
+    result_path.write_text(
+        json.dumps(result, indent=2, allow_nan=False),
+        encoding="utf-8",
+    )
+    manifest = {
+        "protocol_id": PROTOCOL_ID,
+        "result_file": result_path.name,
+        "result_sha256": sha256_file(result_path),
+        "actions_npz_file": npz_path.name,
+        "actions_npz_sha256": sha256_file(npz_path),
+    }
+
+    manifest_path = output_dir / "bundle_manifest.json"
+    manifest_path.write_text(
+        json.dumps(manifest, indent=2),
+        encoding="utf-8",
+    )
+
+    return result_path, manifest_path
+
 
 def run_websocket_validation(host: str, port: int):
     """Fail closed: WebSocket cannot be authoritative without exact FrameSamp identities."""
@@ -569,33 +1524,151 @@ def run_websocket_validation(host: str, port: int):
     )
 
 
+
 def main():
-    parser = argparse.ArgumentParser(description="Replication A Checkpoint Validation Routine")
-    parser.add_argument("--host", type=str, default="0.0.0.0", help="Policy server host")
-    parser.add_argument("--port", type=int, default=8000, help="Policy server port")
+    parser = argparse.ArgumentParser(
+        description="Run one frozen Replication A scientific unit"
+    )
     parser.add_argument(
         "--checkpoint-dir",
         type=Path,
-        default=None,
-        help="Required for authoritative in-process validation",
+        required=True,
     )
-    parser.add_argument("--config", type=str, default="mme_vla_suite", help="Policy config name")
+    parser.add_argument(
+        "--query-family",
+        choices=FROZEN_FAMILIES,
+        required=True,
+    )
+    parser.add_argument(
+        "--query-episode",
+        type=int,
+        required=True,
+    )
+    parser.add_argument(
+        "--process-block",
+        choices=PROCESS_BLOCKS,
+        required=True,
+    )
+    parser.add_argument(
+        "--output-root",
+        type=Path,
+        default=REPO_ROOT / "runs" / "replication_a",
+    )
+    parser.add_argument(
+        "--config",
+        type=str,
+        default="mme_vla_suite",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=42,
+    )
+    parser.add_argument(
+        "--max-steps",
+        type=int,
+        default=1300,
+    )
     args = parser.parse_args()
-
-    if args.checkpoint_dir:
-        from mme_vla_suite.policies import policy_config as _policy_config
-        from mme_vla_suite.training import config as _config
-
-        logging.info("Loading checkpoint from %s...", args.checkpoint_dir)
-        policy = _policy_config.create_trained_policy(
-            _config.get_config(args.config),
-            args.checkpoint_dir,
-            seed=42,
+    if args.query_episode not in FROZEN_EPISODES:
+        raise RuntimeError(
+            f"Episode {args.query_episode} is not in frozen cohort"
         )
-        run_in_process_validation(policy)
-    else:
-        logging.error("Authoritative validation requires --checkpoint-dir.")
-        run_websocket_validation(args.host, args.port)
+
+    if args.seed != 42:
+        raise RuntimeError(
+            f"Replication A v1.0 requires seed 42; got {args.seed}"
+        )
+
+    if args.checkpoint_dir.name != CHECKPOINT_ID:
+        raise RuntimeError(
+            f"Replication A requires checkpoint {CHECKPOINT_ID}; "
+            f"got {args.checkpoint_dir}"
+        )
+
+    if os.environ.get("MME_FRAMESAMP_OVERRIDE_PATH"):
+        raise RuntimeError(
+            "MME_FRAMESAMP_OVERRIDE_PATH must be unset before runner start"
+        )
+    if os.environ.get("MME_FRAMESAMP_TEMPORAL_POS_OVERRIDE_PATH"):
+        raise RuntimeError(
+            "MME_FRAMESAMP_TEMPORAL_POS_OVERRIDE_PATH must be unset "
+            "before runner start"
+        )
+
+    output_dir = (
+        args.output_root
+        / args.process_block
+        / f"{args.query_family}_ep{args.query_episode}"
+    )
+
+    if output_dir.exists():
+        raise FileExistsError(
+            f"Scientific result directory already exists: {output_dir}"
+        )
+
+    artifact_dir = output_dir.parent / (
+        f".{args.query_family}_ep{args.query_episode}_env_artifacts"
+    )
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    logging.info(
+        "Preparing Replication A unit: %s ep%d %s",
+        args.query_family,
+        args.query_episode,
+        args.process_block,
+    )
+
+    unit_inputs = build_replication_a_unit_inputs(
+        args.query_family,
+        args.query_episode,
+        artifact_dir,
+        args.max_steps,
+    )
+
+    from mme_vla_suite.policies import policy_config as _policy_config
+    from mme_vla_suite.training import config as _config
+
+    logging.info("Loading checkpoint from %s", args.checkpoint_dir)
+    policy = _policy_config.create_trained_policy(
+        _config.get_config(args.config),
+        args.checkpoint_dir,
+        seed=args.seed,
+    )
+    loaded_config = validate_replication_a_policy(policy)
+
+    row_results = {}
+
+    for condition in CONDITIONS:
+        logging.info("Running content row: %s", condition.upper())
+
+        row_results[condition] = run_replication_a_content_row(
+            policy,
+            unit_inputs["assemblies"][condition],
+            unit_inputs["assemblies"],
+            unit_inputs["retained_manifest"],
+            unit_inputs["query_obs"],
+            artifact_dir / "overrides",
+        )
+    result_path, manifest_path = save_replication_a_unit_bundle(
+        output_dir,
+        unit_inputs=unit_inputs,
+        row_results=row_results,
+        query_family=args.query_family,
+        query_episode=args.query_episode,
+        process_block=args.process_block,
+        checkpoint_dir=args.checkpoint_dir,
+        seed=args.seed,
+        loaded_config=loaded_config,
+    )
+
+    logging.info("ALL SCIENTIFIC-UNIT INVARIANTS PASSED")
+    logging.info("Result: %s", result_path)
+    logging.info("Manifest: %s", manifest_path)
+
+    print(f"REPLICATION_A_UNIT_COMPLETE={output_dir}")
+    print(f"RESULT_SHA256={sha256_file(result_path)}")
+
+    return 0
 
 
 if __name__ == "__main__":
