@@ -1,0 +1,60 @@
+{
+  "analysis_id": "ROBOMME-SEQUENCE-ORDER-ISOLATION-v1.0",
+  "status": "post-hoc mechanistic diagnostic motivated by the temporal-content interaction result",
+  "purpose": "Quantify retention-matched output divergence caused by changing the retained evidence sequence arrangement while holding the temporal-coordinate assignment common.",
+  "data_source": "Existing Replication A 3x3 matrices only; no new policy inference.",
+  "scientific_unit": "episode x unordered condition pair",
+  "condition_pairs": [
+    "far__middle",
+    "far__recent",
+    "middle__recent"
+  ],
+  "factorial_cells": {
+    "Y_AA": "row A evidence sequence with temporal-coordinate assignment A",
+    "Y_AB": "row A evidence sequence with temporal-coordinate assignment B",
+    "Y_BA": "row B evidence sequence with temporal-coordinate assignment A",
+    "Y_BB": "row B evidence sequence with temporal-coordinate assignment B"
+  },
+  "controlled_sequence_contrasts": {
+    "sequence_effect_at_A_coordinates": "Y_BA - Y_AA",
+    "sequence_effect_at_B_coordinates": "Y_BB - Y_AB",
+    "distance_at_A_coordinates": "MAE(Y_AA, Y_BA)",
+    "distance_at_B_coordinates": "MAE(Y_AB, Y_BB)",
+    "common_coordinate_sequence_distance": "mean(distance_at_A_coordinates, distance_at_B_coordinates)",
+    "native_matched_distance": "MAE(Y_AA, Y_BB)",
+    "sequence_to_native_ratio": "common_coordinate_sequence_distance / native_matched_distance"
+  },
+  "directional_diagnostics": {
+    "sequence_vector_cosine": "cosine(sequence_effect_at_A_coordinates, sequence_effect_at_B_coordinates)",
+    "native_residual_vector": "Y_BB - Y_AA",
+    "sequence_projection_at_A": "dot(sequence_effect_at_A_coordinates, native_residual_vector) / dot(native_residual_vector, native_residual_vector)",
+    "sequence_projection_at_B": "dot(sequence_effect_at_B_coordinates, native_residual_vector) / dot(native_residual_vector, native_residual_vector)",
+    "mean_sequence_projection_onto_native": "mean(sequence_projection_at_A, sequence_projection_at_B)"
+  },
+  "interpretation": {
+    "sequence_to_native_ratio_near_one": "sequence-arrangement divergence under common temporal coordinates has magnitude comparable to the native matched residual; this does not by itself establish that sequence arrangement explains the native residual because direction and interaction must also be considered.",
+    "sequence_to_native_ratio_much_below_one": "sequence-arrangement divergence under common temporal coordinates is smaller than the native matched residual; the remainder cannot be uniquely assigned to temporal coordinates because temporal-by-sequence interaction may contribute.",
+    "negative_or_low_sequence_vector_cosine": "the effect of sequence arrangement depends strongly on the temporal-coordinate context.",
+    "positive_mean_sequence_projection": "on average, the controlled sequence-arrangement contrasts point in the direction of the native matched residual.",
+    "scope": "initial inferred 16x8 action chunk only; no behavioral claim and no additive variance-share interpretation."
+  },
+  "process_handling": {
+    "role": "P1/P2/P3 are technical nuisance repeats, not scientific N.",
+    "procedure": "Compute each nonlinear metric independently in P1, P2, and P3, then average the three scalar metric values for each episode x unordered condition pair."
+  },
+  "summary_statistics": {
+    "metrics": [
+      "median",
+      "25th_percentile",
+      "75th_percentile"
+    ],
+    "report_levels": [
+      "overall",
+      "task_family",
+      "condition_pair",
+      "task_family_x_condition_pair"
+    ],
+    "inferential_tests": "none"
+  },
+  "analysis_boundary": "This is the final retrospective mechanistic localization analysis before synthesis and selection of a prospective behavioral or held-out validation experiment."
+}
