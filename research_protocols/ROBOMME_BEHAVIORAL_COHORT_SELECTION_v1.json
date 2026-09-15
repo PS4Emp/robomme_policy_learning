@@ -59,5 +59,220 @@
     "optional_population_weighted": "summary reweighted only to the 40-episode held-out difficulty distribution of 50% easy / 25% medium / 25% hard",
     "generalization_boundary": "No claim of representativeness beyond the defined held-out benchmark episode pool without additional validation."
   },
-  "next_step": "Generate and record exact selected episode IDs from the frozen rule before any closed-loop policy inference."
+  "next_step": "Generate and record exact selected episode IDs from the frozen rule before any closed-loop policy inference.",
+  "frozen_selection": {
+    "VideoUnmask": {
+      "easy": [
+        24,
+        28,
+        32,
+        41
+      ],
+      "medium": [
+        10,
+        26,
+        42
+      ],
+      "hard": [
+        15,
+        19,
+        47
+      ]
+    },
+    "InsertPeg": {
+      "easy": [
+        13,
+        28,
+        36,
+        45
+      ],
+      "medium": [
+        10,
+        14,
+        26
+      ],
+      "hard": [
+        15,
+        39,
+        43
+      ]
+    },
+    "VideoPlaceOrder": {
+      "easy": [
+        9,
+        21,
+        29,
+        36
+      ],
+      "medium": [
+        2,
+        6,
+        42
+      ],
+      "hard": [
+        3,
+        23,
+        35
+      ]
+    }
+  },
+  "frozen_episode_manifest": {
+    "VideoUnmask": [
+      {
+        "episode": 24,
+        "difficulty": "easy",
+        "env_seed": 1062400
+      },
+      {
+        "episode": 28,
+        "difficulty": "easy",
+        "env_seed": 1062800
+      },
+      {
+        "episode": 32,
+        "difficulty": "easy",
+        "env_seed": 1063200
+      },
+      {
+        "episode": 41,
+        "difficulty": "easy",
+        "env_seed": 1064100
+      },
+      {
+        "episode": 10,
+        "difficulty": "medium",
+        "env_seed": 1061000
+      },
+      {
+        "episode": 26,
+        "difficulty": "medium",
+        "env_seed": 1062600
+      },
+      {
+        "episode": 42,
+        "difficulty": "medium",
+        "env_seed": 1064200
+      },
+      {
+        "episode": 15,
+        "difficulty": "hard",
+        "env_seed": 1061500
+      },
+      {
+        "episode": 19,
+        "difficulty": "hard",
+        "env_seed": 1061900
+      },
+      {
+        "episode": 47,
+        "difficulty": "hard",
+        "env_seed": 1064700
+      }
+    ],
+    "InsertPeg": [
+      {
+        "episode": 13,
+        "difficulty": "easy",
+        "env_seed": 1131301
+      },
+      {
+        "episode": 28,
+        "difficulty": "easy",
+        "env_seed": 1132800
+      },
+      {
+        "episode": 36,
+        "difficulty": "easy",
+        "env_seed": 1133600
+      },
+      {
+        "episode": 45,
+        "difficulty": "easy",
+        "env_seed": 1134500
+      },
+      {
+        "episode": 10,
+        "difficulty": "medium",
+        "env_seed": 1131001
+      },
+      {
+        "episode": 14,
+        "difficulty": "medium",
+        "env_seed": 1131400
+      },
+      {
+        "episode": 26,
+        "difficulty": "medium",
+        "env_seed": 1132601
+      },
+      {
+        "episode": 15,
+        "difficulty": "hard",
+        "env_seed": 1131500
+      },
+      {
+        "episode": 39,
+        "difficulty": "hard",
+        "env_seed": 1133900
+      },
+      {
+        "episode": 43,
+        "difficulty": "hard",
+        "env_seed": 1134300
+      }
+    ],
+    "VideoPlaceOrder": [
+      {
+        "episode": 9,
+        "difficulty": "easy",
+        "env_seed": 1110900
+      },
+      {
+        "episode": 21,
+        "difficulty": "easy",
+        "env_seed": 1112100
+      },
+      {
+        "episode": 29,
+        "difficulty": "easy",
+        "env_seed": 1112901
+      },
+      {
+        "episode": 36,
+        "difficulty": "easy",
+        "env_seed": 1113600
+      },
+      {
+        "episode": 2,
+        "difficulty": "medium",
+        "env_seed": 1110200
+      },
+      {
+        "episode": 6,
+        "difficulty": "medium",
+        "env_seed": 1110600
+      },
+      {
+        "episode": 42,
+        "difficulty": "medium",
+        "env_seed": 1114202
+      },
+      {
+        "episode": 3,
+        "difficulty": "hard",
+        "env_seed": 1110304
+      },
+      {
+        "episode": 23,
+        "difficulty": "hard",
+        "env_seed": 1112302
+      },
+      {
+        "episode": 35,
+        "difficulty": "hard",
+        "env_seed": 1113504
+      }
+    ]
+  },
+  "selection_status": "exact cohort frozen before any closed-loop policy inference"
 }
