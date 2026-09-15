@@ -77,5 +77,26 @@
   "process_handling": {
     "role": "P1/P2/P3 are technical nuisance repeats, not scientific N",
     "procedure": "compute each directed bridge metric separately within P1, P2, and P3, then average the three values for each episode x directed comparison before cohort-level analysis"
+  },
+  "summary_statistics": {
+    "for_each_metric": [
+      "median",
+      "25th_percentile",
+      "75th_percentile"
+    ],
+    "directional_projection_fraction": [
+      "fraction_greater_than_zero",
+      "fraction_between_zero_and_one",
+      "fraction_greater_than_one"
+    ],
+    "distance_reduction_toward_target": [
+      "fraction_greater_than_zero"
+    ],
+    "report_levels": [
+      "overall",
+      "task_family",
+      "condition_pair"
+    ],
+    "inferential_tests": "none in this first direct-bridge summary"
   }
 }
