@@ -1,0 +1,72 @@
+{
+  "protocol_id": "ROBOMME-NATURAL-VS-RETENTION-MATCHED-B-v1.0",
+  "purpose": "Measure how much natural FAR/MIDDLE/RECENT output variation is explained by native FrameSamp retention differences versus residual variation after exact evidence matching.",
+  "prerequisite": {
+    "replication_a_complete_units": 90,
+    "replication_a_result": "Temporal positional representation causally affects the initial inferred 16x8 action chunk under fixed retained content/order, with strong process-block robustness."
+  },
+  "cohort": {
+    "families": ["VideoUnmask", "InsertPeg", "VideoPlaceOrder"],
+    "episodes_per_family": [0, 5, 11, 16, 22, 27, 33, 38, 44, 49],
+    "scientific_units": 30,
+    "reuse_replication_a_distractor_assignments": true
+  },
+  "conditions": ["far", "middle", "recent"],
+  "natural_arm": {
+    "frame_selection": "native FrameSamp",
+    "index_override": false,
+    "temporal_position_override": false,
+    "record_exact_retained_semantic_identities": true,
+    "record_initial_action_chunk": "first 16x8"
+  },
+  "matched_arm": {
+    "frame_selection": "exact index override on the full natural history",
+    "temporal_position_override": false,
+    "temporal_positions": "native source/global temporal positions for each condition",
+    "fixed_retained_allocation": {
+      "R": 25,
+      "D1": 2,
+      "D2": 2,
+      "D3": 2,
+      "Q0": 1
+    },
+    "R_rule": "deterministic endpoint-inclusive uniform spacing",
+    "distractor_source_indices": [0, 248],
+    "Q0_rule": "single final query-pretrajectory frame",
+    "outcome_blind": true,
+    "note": "This matched set is frozen before inspecting any Question B outputs and reuses the Replication A evidence-selection rule."
+  },
+  "primary_analysis": {
+    "condition_pairs": [
+      ["far", "middle"],
+      ["far", "recent"],
+      ["middle", "recent"]
+    ],
+    "primary_metric": "MAE on initial inferred 16x8 action chunk",
+    "secondary_metrics": [
+      "Frobenius/L2",
+      "max absolute difference",
+      "relative Frobenius rho"
+    ],
+    "natural_difference": "pairwise output difference under native FrameSamp",
+    "matched_difference": "same pairwise output difference after exact retained-evidence matching",
+    "retention_attributable_reduction": "natural_difference - matched_difference"
+  },
+  "retention_diagnostics": [
+    "retained relevant-frame count by condition",
+    "pairwise semantic-identity overlap",
+    "pairwise Jaccard overlap",
+    "exact retained identities and global positions"
+  ],
+  "interpretation_rules": {
+    "matched_much_smaller_than_natural": "retention differences explain a substantial part of the natural condition effect",
+    "matched_remains_substantial": "retention matching is insufficient; residual order/temporal-representation/utilization effects remain",
+    "replication_a_role": "Replication A may help explain the temporal-representation component of a residual, but does not establish that it is the sole mechanism",
+    "behavior_claims": "No behavioral-success claim is permitted from Question B open-loop action chunks alone."
+  },
+  "process_plan": {
+    "formal_blocks": 1,
+    "reason": "Replication A established very small fresh-process nuisance variation; Question B instead uses exact within-run replay/invariants."
+  },
+  "hard_stop": "Any provenance, selection, replay, cache, shape, or evidence-matching invariant failure aborts the run."
+}
