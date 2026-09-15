@@ -1,0 +1,54 @@
+{
+  "analysis_id": "ROBOMME-A-B-BRIDGE-ANALYSIS-v1.0",
+  "purpose": "Test whether the temporal-position sensitivity isolated in Replication A covaries with the post-retention matched residual observed in Question B.",
+  "data": {
+    "replication_a": "runs/replication_a_formal/P1,P2,P3",
+    "question_b": "runs/question_b_formal",
+    "families": ["VideoUnmask", "InsertPeg", "VideoPlaceOrder"],
+    "episodes_per_family": [0, 5, 11, 16, 22, 27, 33, 38, 44, 49],
+    "condition_pairs": ["far__middle", "far__recent", "middle__recent"]
+  },
+  "question_b_paired_analysis": {
+    "comparison": "natural MAE versus retention-matched MAE within the same episode and condition pair",
+    "test": "two-sided Wilcoxon signed-rank",
+    "report": [
+      "median natural MAE",
+      "median matched MAE",
+      "median paired reduction",
+      "95% bootstrap CI of median paired reduction",
+      "Wilcoxon p-value"
+    ],
+    "strata": "family x condition-pair",
+    "multiple_testing": "Holm correction across the 9 family x pair tests"
+  },
+  "a_sensitivity_definition": {
+    "unit": "episode x undirected condition-pair",
+    "value": "mean MAE across the two directed temporal-position interventions and all three process blocks",
+    "example_far_middle": [
+      "far->middle",
+      "middle->far"
+    ]
+  },
+  "b_residual_definition": {
+    "unit": "same episode x undirected condition-pair",
+    "value": "Question B retention-matched pairwise MAE"
+  },
+  "primary_a_b_association": {
+    "method": "stratified rank association",
+    "strata": "family x condition-pair",
+    "procedure": "rank A sensitivity and B residual separately within each 10-episode stratum, center the ranks within stratum, then compute pooled Pearson correlation of centered ranks",
+    "significance": "10000 permutations of B ranks within each family x condition-pair stratum",
+    "seed": 20260915
+  },
+  "secondary_a_b_association": {
+    "report": [
+      "Spearman correlation within each family x condition-pair stratum",
+      "pooled raw Spearman correlation for description only"
+    ]
+  },
+  "interpretation": {
+    "positive_stratified_association": "supports a link between A temporal-position sensitivity and B post-retention residual, but does not prove that temporal position is the sole cause of the B residual",
+    "weak_or_null_association": "suggests that additional post-retention mechanisms contribute materially to B residuals",
+    "behavior_claims": "none"
+  }
+}
