@@ -2,8 +2,23 @@
   "protocol_id": "ROBOMME-DIRECT-A-B-BRIDGE-v1.0",
   "purpose": "Test whether temporal positional representation causally contributes to the post-retention residual observed in Question B.",
   "cohort": {
-    "families": ["VideoUnmask", "InsertPeg", "VideoPlaceOrder"],
-    "episodes_per_family": [0, 5, 11, 16, 22, 27, 33, 38, 44, 49],
+    "families": [
+      "VideoUnmask",
+      "InsertPeg",
+      "VideoPlaceOrder"
+    ],
+    "episodes_per_family": [
+      0,
+      5,
+      11,
+      16,
+      22,
+      27,
+      33,
+      38,
+      44,
+      49
+    ],
     "scientific_units": 30
   },
   "input_histories": {
@@ -13,8 +28,16 @@
     "query_checkpoint_seed": "fixed"
   },
   "intervention": {
-    "content_rows": ["far", "middle", "recent"],
-    "temporal_position_columns": ["far", "middle", "recent"],
+    "content_rows": [
+      "far",
+      "middle",
+      "recent"
+    ],
+    "temporal_position_columns": [
+      "far",
+      "middle",
+      "recent"
+    ],
     "design": "3x3",
     "only_changed_variable_within_row": "temporal positional representation",
     "identity_column": "row condition",
@@ -50,5 +73,9 @@
     "sole_mechanism_claim": false,
     "behavior_claims": false
   },
-  "hard_stop": "Any retained-identity, temporal-map, replay, cache, shape, or model-boundary invariant failure aborts the run."
+  "hard_stop": "Any retained-identity, temporal-map, replay, cache, shape, or model-boundary invariant failure aborts the run.",
+  "process_handling": {
+    "role": "P1/P2/P3 are technical nuisance repeats, not scientific N",
+    "procedure": "compute each directed bridge metric separately within P1, P2, and P3, then average the three values for each episode x directed comparison before cohort-level analysis"
+  }
 }
