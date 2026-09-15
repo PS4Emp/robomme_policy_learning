@@ -4,7 +4,18 @@
   "purpose": "Select held-out query episodes for prospective closed-loop behavioral validation across pre-existing difficulty strata.",
   "eligible_pool": {
     "per_family": 40,
-    "excluded_prior_mechanistic_episodes": [0, 5, 11, 16, 22, 27, 33, 38, 44, 49],
+    "excluded_prior_mechanistic_episodes": [
+      0,
+      5,
+      11,
+      16,
+      22,
+      27,
+      33,
+      38,
+      44,
+      49
+    ],
     "eligibility_requirements": [
       "valid query episode",
       "Q0 constructible",
@@ -30,7 +41,18 @@
     "rng": "numpy.random.Generator with PCG64",
     "seed": 20260915,
     "ordering_before_sampling": "sort eligible episode IDs ascending within each stratum",
-    "outcome_information_used": false
+    "outcome_information_used": false,
+    "family_order": [
+      "VideoUnmask",
+      "InsertPeg",
+      "VideoPlaceOrder"
+    ],
+    "difficulty_order": [
+      "easy",
+      "medium",
+      "hard"
+    ],
+    "rng_stream_rule": "Initialize one numpy.random.Generator(PCG64) with seed 20260915 exactly once; then sample without replacement in family_order x difficulty_order traversal order."
   },
   "estimands": {
     "primary_unweighted": "behavioral effect in the intentionally enriched 4 easy / 3 medium / 3 hard experimental cohort",
